@@ -25,7 +25,7 @@ type PostgresEngine struct {
 	logger            lager.Logger
 	db                *sql.DB
 	requireSSL        bool
-	UsernameGenerator func(string) string
+	UsernameGenerator func(seed string) string
 }
 
 func NewPostgresEngine(logger lager.Logger) *PostgresEngine {
@@ -70,16 +70,17 @@ func (d *PostgresEngine) Close() {
 	}
 }
 
-func (d *PostgresEngine) execCreateUser(tx *sql.Tx, bindingID, dbname string) (username, password string, err error) {
-	groupname := d.generatePostgresGroup(dbname)
+func (d *PostgresEngine) execCreateUser(tx *sql.Tx, bindingID, dbname string, readOnly *bool) (username, password string, err error) {
+	//groupname := d.generatePostgresGroup(dbname, readOnly)
 
-	if err = d.ensureGroup(tx, dbname, groupname); err != nil {
+	if err = d.ensureRoles(tx, dbname); err != nil {
 		return "", "", err
 	}
 
-	if err = d.ensureTrigger(tx, groupname); err != nil {
-		return "", "", err
-	}
+	//WIP - we don't need this anymore
+	// if err = d.ensureTrigger(tx, groupname); err != nil {
+	// 	return "", "", err
+	// }
 
 	username = d.UsernameGenerator(bindingID)
 	password = generatePassword()
@@ -88,7 +89,19 @@ func (d *PostgresEngine) execCreateUser(tx *sql.Tx, bindingID, dbname string) (u
 		return "", "", err
 	}
 
-	grantPrivilegesStatement := fmt.Sprintf(`grant "%s" to "%s"`, groupname, username)
+	var grantPrivilegesStatement string
+	if readOnly != nil && !(*readOnly) {
+		d.logger.Debug("grant-privileges", lager.Data{"statement": "adding user to a READ-WRITE role"})
+		grantPrivilegesStatement = fmt.Sprintf(`grant "%s" to "%s";`, READ_WRITE_ROLE_NAME, username)
+		grantPrivilegesStatement += fmt.Sprintf(`grant "%s" to "%s";`, READ_ONLY_ROLE_NAME, username)
+		if err = d.ensureTrigger(tx, READ_WRITE_ROLE_NAME); err != nil {
+			return "", "", err
+		}
+	} else {
+		d.logger.Debug("grant-privileges", lager.Data{"statement": "adding user to a READ-ONLY role"})
+		grantPrivilegesStatement = fmt.Sprintf(`grant "%s" to "%s"`, READ_ONLY_ROLE_NAME, username)
+	}
+
 	d.logger.Debug("grant-privileges", lager.Data{"statement": grantPrivilegesStatement})
 
 	if _, err := tx.Exec(grantPrivilegesStatement); err != nil {
@@ -96,24 +109,16 @@ func (d *PostgresEngine) execCreateUser(tx *sql.Tx, bindingID, dbname string) (u
 		return "", "", err
 	}
 
-	grantAllOnDatabaseStatement := fmt.Sprintf(`grant all privileges on database "%s" to "%s"`, dbname, groupname)
-	d.logger.Debug("grant-privileges", lager.Data{"statement": grantAllOnDatabaseStatement})
-
-	if _, err := tx.Exec(grantAllOnDatabaseStatement); err != nil {
-		d.logger.Error("Grant sql-error", err)
-		return "", "", err
-	}
-
 	return username, password, nil
 }
 
-func (d *PostgresEngine) createUser(bindingID, dbname string) (username, password string, err error) {
+func (d *PostgresEngine) createUser(bindingID, dbname string, readOnly *bool) (username, password string, err error) {
 	tx, err := d.db.Begin()
 	if err != nil {
 		d.logger.Error("sql-error", err)
 		return "", "", err
 	}
-	username, password, err = d.execCreateUser(tx, bindingID, dbname)
+	username, password, err = d.execCreateUser(tx, bindingID, dbname, readOnly)
 	if err != nil {
 		_ = tx.Rollback()
 		return "", "", err
@@ -121,12 +126,12 @@ func (d *PostgresEngine) createUser(bindingID, dbname string) (username, passwor
 	return username, password, tx.Commit()
 }
 
-func (d *PostgresEngine) CreateUser(bindingID, dbname string) (username, password string, err error) {
+func (d *PostgresEngine) CreateUser(bindingID, dbname string, readOnly *bool) (username, password string, err error) {
 	var pqErr *pq.Error
 	tries := 0
 	for tries < 10 {
 		tries++
-		username, password, err := d.createUser(bindingID, dbname)
+		username, password, err := d.createUser(bindingID, dbname, readOnly)
 		if err != nil {
 			var ok bool
 			pqErr, ok = err.(*pq.Error)
@@ -291,8 +296,66 @@ func (d *PostgresEngine) DropExtensions(extensions []string) error {
 
 // generatePostgresGroup produces a deterministic group name. This is because the role
 // will be persisted across all application bindings
-func (d *PostgresEngine) generatePostgresGroup(dbname string) string {
-	return dbname + "_manager"
+func (d *PostgresEngine) generatePostgresGroup(dbname string, readOnly *bool) string {
+	groupName := dbname + "_manager"
+	if readOnly != nil && *readOnly {
+		groupName = dbname + "_readonly"
+	}
+
+	return groupName
+}
+
+const READ_ONLY_ROLE_NAME string = "readonly"
+const READ_WRITE_ROLE_NAME string = "readwrite"
+const ensureRolesPattern = `
+	do
+	$body$
+	begin
+		IF NOT EXISTS (select 1 from pg_catalog.pg_roles where rolname = '{{.read_only_role}}') THEN
+			CREATE ROLE "{{.read_only_role}}";
+		END IF;
+		
+		REVOKE ALL ON DATABASE "{{.database}}" FROM PUBLIC;
+		GRANT CONNECT ON DATABASE "{{.database}}" TO "{{.read_only_role}}";
+		REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+		GRANT USAGE ON SCHEMA public TO "{{.read_only_role}}";
+		GRANT SELECT ON ALL TABLES IN SCHEMA public TO "{{.read_only_role}}";
+		ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO "{{.read_only_role}}";
+		
+		IF NOT EXISTS (select 1 from pg_catalog.pg_roles where rolname = '{{.read_write_role}}') THEN
+			CREATE ROLE "{{.read_write_role}}";
+		END IF;
+		
+		GRANT ALL PRIVILEGES ON DATABASE "{{.database}}" TO "{{.read_write_role}}";
+		GRANT ALL PRIVILEGES ON SCHEMA public TO "{{.read_write_role}}";
+		GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "{{.read_write_role}}";
+		ALTER DEFAULT PRIVILEGES FOR ROLE "{{.read_write_role}}" IN SCHEMA public GRANT ALL ON TABLES TO "{{.read_write_role}}";
+		GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO "{{.read_write_role}}";
+		ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO "{{.read_write_role}}";
+		ALTER DEFAULT PRIVILEGES FOR ROLE "{{.read_write_role}}" IN SCHEMA public GRANT SELECT ON TABLES TO "{{.read_only_role}}";
+		
+	end
+	$body$
+	`
+
+var ensureRolesTemplate = template.Must(template.New("ensureRoles").Parse(ensureRolesPattern))
+
+func (d *PostgresEngine) ensureRoles(tx *sql.Tx, dbname string) error {
+	var ensureRolesStatement bytes.Buffer
+	if err := ensureRolesTemplate.Execute(&ensureRolesStatement, map[string]string{
+		"read_only_role":  READ_ONLY_ROLE_NAME,
+		"read_write_role": READ_WRITE_ROLE_NAME,
+		"database":        dbname,
+	}); err != nil {
+		return err
+	}
+	d.logger.Debug("ensure-roles", lager.Data{"statement": ensureRolesStatement.String()})
+
+	if _, err := tx.Exec(ensureRolesStatement.String()); err != nil {
+		d.logger.Error("sql-error", err)
+		return err
+	}
+	return nil
 }
 
 const ensureGroupPattern = `
@@ -344,7 +407,11 @@ const ensureTriggerPattern = `
 			RETURN;
 		END IF;
 
-		EXECUTE 'reassign owned by "' || current_user || '" to "{{.role}}"';
+		IF EXISTS (select 1 from pg_catalog.pg_roles where rolname = 'readwrite')
+		AND pg_has_role(current_user, 'readwrite', 'member') THEN
+			EXECUTE 'reassign owned by "' || current_user || '" to "{{.role}}"';
+		END IF;
+		
 	end
 	$$;
 	`
@@ -401,6 +468,8 @@ func (d *PostgresEngine) ensureUser(tx *sql.Tx, dbname string, username string, 
 	}); err != nil {
 		return err
 	}
+	d.logger.Debug("ensure-user-with-password", lager.Data{"statement": ensureUserStatement.String()})
+
 	var ensureUserStatementSanitized bytes.Buffer
 	if err := ensureCreateUserTemplate.Execute(&ensureUserStatementSanitized, map[string]string{
 		"password": "REDACTED",

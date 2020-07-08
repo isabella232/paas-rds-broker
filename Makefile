@@ -10,7 +10,7 @@ unit: test_unit test_all_sql
 
 .PHONY: test_unit
 test_unit:
-	ginkgo -r --skipPackage=ci,sqlengine
+	ginkgo -r -v --skipPackage=ci,sqlengine
 .PHONY: test_all_sql
 test_all_sql: test_postgres test_mysql
 .PHONY: test_postgres
@@ -20,26 +20,26 @@ test_mysql: start_mysql_80 run_mysql_sql_tests stop_mysql_80 start_mysql_57 run_
 
 .PHONY: run_mysql_sql_tests
 run_mysql_sql_tests:
-	MYSQL_PASSWORD=$(MYSQL_PASSWORD) ginkgo -focus=MySQLEngine.* sqlengine/
+	MYSQL_PASSWORD=$(MYSQL_PASSWORD) ginkgo -v -focus=MySQLEngine.* sqlengine/
 
 .PHONY: run_postgres_sql_tests
 run_postgres_sql_tests:
-	POSTGRESQL_PASSWORD=$(POSTGRESQL_PASSWORD) ginkgo -focus=PostgresEngine.* sqlengine/
+	POSTGRESQL_PASSWORD=$(POSTGRESQL_PASSWORD) ginkgo -v -focus=PostgresEngine.* sqlengine/
 
 .PHONY: start_postgres_9
 start_postgres_9:
 	docker run -p 5432:5432 --name postgres-9 -e POSTGRES_PASSWORD=$(POSTGRESQL_PASSWORD) -d postgres:9.5; \
-	sleep 5
+	sleep 10
 
 .PHONY: start_postgres_10
 start_postgres_10:
 	docker run -p 5432:5432 --name postgres-10 -e POSTGRES_PASSWORD=$(POSTGRESQL_PASSWORD) -d postgres:10.5; \
-	sleep 5
+	sleep 10
 
 .PHONY: start_postgres_11
 start_postgres_11:
 	docker run -p 5432:5432 --name postgres-11 -e POSTGRES_PASSWORD=$(POSTGRESQL_PASSWORD) -d postgres:11.5; \
-	sleep 5
+	sleep 10
 
 .PHONY: stop_postgres_9
 stop_postgres_9:
@@ -59,7 +59,7 @@ start_mysql_57:
 	until docker exec mysql-57 mysqladmin ping --silent; do \
 	    printf "."; sleep 1;                             \
 	done; \
-	sleep 5
+	sleep 10
 
 .PHONY: start_mysql_80
 start_mysql_80:
@@ -68,7 +68,7 @@ start_mysql_80:
 	until docker exec mysql-80 mysqladmin ping --silent; do \
 		printf "."; sleep 1;                             \
 	done; \
-	sleep 5
+	sleep 10
 
 .PHONY: stop_mysql_57
 stop_mysql_57:

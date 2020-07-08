@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/pivotal-cf/brokerapi/domain/apiresponses"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pivotal-cf/brokerapi/domain/apiresponses"
 
 	"code.cloudfoundry.org/lager"
 	"github.com/pivotal-cf/brokerapi"
@@ -598,7 +599,7 @@ func (b *RDSBroker) Bind(
 	}
 	defer sqlEngine.Close()
 
-	dbUsername, dbPassword, err := sqlEngine.CreateUser(bindingID, dbName)
+	dbUsername, dbPassword, err := sqlEngine.CreateUser(bindingID, dbName, bindParameters.ReadOnly)
 	if err != nil {
 		return bindingResponse, err
 	}

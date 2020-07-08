@@ -62,7 +62,9 @@ func (d *MySQLEngine) Close() {
 	}
 }
 
-func (d *MySQLEngine) CreateUser(bindingID, dbname string) (username, password string, err error) {
+//WIP - just changed the signature
+//the real work has to be done yet.
+func (d *MySQLEngine) CreateUser(bindingID, dbname string, readOnly *bool) (username, password string, err error) {
 	username = d.UsernameGenerator(bindingID)
 	password = generatePassword()
 	options := []string{

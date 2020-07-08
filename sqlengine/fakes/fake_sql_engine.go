@@ -58,7 +58,7 @@ func (f *FakeSQLEngine) Close() {
 	f.CloseCalled = true
 }
 
-func (f *FakeSQLEngine) CreateUser(bindingID, dbname string) (username, password string, err error) {
+func (f *FakeSQLEngine) CreateUser(bindingID, dbname string, readOnly *bool) (username, password string, err error) {
 	f.CreateUserCalled = true
 	f.CreateUserBindingID = bindingID
 	f.CreateUserDBName = dbname
