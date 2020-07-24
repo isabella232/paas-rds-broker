@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/pivotal-cf/brokerapi/domain/apiresponses"
 	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pivotal-cf/brokerapi/domain/apiresponses"
 
 	"code.cloudfoundry.org/lager"
 	"github.com/pivotal-cf/brokerapi"
@@ -179,6 +180,8 @@ func (b *RDSBroker) Provision(
 			return brokerapi.ProvisionedServiceSpec{}, err
 		}
 	}
+
+	// At this point we should know if a replica is being requested by checking provisionParameters.Replicate.InstanceID != ""
 
 	servicePlan, ok := b.catalog.FindServicePlan(details.PlanID)
 	if !ok {

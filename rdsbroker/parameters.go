@@ -12,6 +12,10 @@ type ProvisionParameters struct {
 	RestoreFromLatestSnapshotOf     *string  `json:"restore_from_latest_snapshot_of"`
 	RestoreFromLatestSnapshotBefore *string  `json:"restore_from_latest_snapshot_before"`
 	Extensions                      []string `json:"enable_extensions"`
+	Replicate                       struct {
+		InstanceID     string `json:"instance_id"`
+		InstanceRegion string `json:"region"`
+	} `json:"replicate"`
 }
 
 type UpdateParameters struct {
@@ -32,6 +36,7 @@ type BindParameters struct {
 }
 
 func (pp *ProvisionParameters) Validate() error {
+	// we may want to validate that replicate isn't being passed w/ any conflicting parameters
 	return nil
 }
 
