@@ -23,6 +23,7 @@ type RDSInstance interface {
 	DeleteSnapshots(brokerName string, keepForDays int) error
 	Create(createDBInstanceInput *rds.CreateDBInstanceInput) error
 	CreateReadReplica(createDBInstanceInput *rds.CreateDBInstanceReadReplicaInput) error
+	PromoteReadReplica(promoteReadReplicaInput *rds.PromoteReadReplicaInput) (*rds.DBInstance, error)
 	Restore(restoreRBInstanceInput *rds.RestoreDBInstanceFromDBSnapshotInput) error
 	Modify(modifyDBInstanceInput *rds.ModifyDBInstanceInput) (*rds.DBInstance, error)
 	AddTagsToResource(resourceArn string, tags []*rds.Tag) error

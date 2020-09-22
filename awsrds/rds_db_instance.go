@@ -251,6 +251,19 @@ func (r *RDSDBInstance) CreateReadReplica(createDBInstanceInput *rds.CreateDBIns
 	return nil
 }
 
+func (r *RDSDBInstance) PromoteReadReplica(promoteReadReplicaInput *rds.PromoteReadReplicaInput) (*rds.DBInstance, error) {
+	sanitizedDBInstanceInput := *promoteReadReplicaInput
+	r.logger.Debug("promote-db-instance-read-replica", lager.Data{"input": &sanitizedDBInstanceInput})
+
+	promoteDBInstanceOutput, err := r.rdssvc.PromoteReadReplica(promoteReadReplicaInput)
+	if err != nil {
+		return nil, HandleAWSError(err, r.logger)
+	}
+	r.logger.Debug("promote-db-instance-read-replica", lager.Data{"output": promoteDBInstanceOutput})
+
+	return promoteDBInstanceOutput.DBInstance, nil
+}
+
 func (r *RDSDBInstance) Restore(restoreDBInstanceInput *rds.RestoreDBInstanceFromDBSnapshotInput) error {
 	r.logger.Debug("restore-db-instance", lager.Data{"input": &restoreDBInstanceInput})
 

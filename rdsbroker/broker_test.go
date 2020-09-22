@@ -2680,32 +2680,49 @@ var _ = Describe("RDS Broker", func() {
 					},
 				},
 			}
+			replicaDBInstance = &rds.DBInstance{
+				DBInstanceIdentifier: aws.String(dbInstanceIdentifier),
+				DBInstanceArn:        aws.String(dbInstanceArn),
+				Engine:               aws.String("test-engine"),
+				Endpoint: &rds.Endpoint{
+					Address: aws.String("endpoint-address"),
+					Port:    aws.Int64(3306),
+				},
+				DBName:                                aws.String("test-db"),
+				MasterUsername:                        aws.String("master-username"),
+				ReadReplicaSourceDBInstanceIdentifier: aws.String("test-source"),
+				DBParameterGroups: []*rds.DBParameterGroupStatus{
+					&rds.DBParameterGroupStatus{
+						DBParameterGroupName: aws.String("rdsbroker-testengin10"),
+					},
+				},
+			}
 		)
 
 		BeforeEach(func() {
 			updateDetails = brokerapi.UpdateDetails{
-				ServiceID:     "Service-1",
-				PlanID:        "Plan-1",
+				ServiceID: "Service-1",
+				PlanID:    "Plan-1",
 				PreviousValues: brokerapi.PreviousValues{
-					ServiceID:     "Service-1",
-					PlanID:        "Plan-1",
-					OrgID:         "organization-id",
-					SpaceID:       "space-id",
+					ServiceID: "Service-1",
+					PlanID:    "Plan-1",
+					OrgID:     "organization-id",
+					SpaceID:   "space-id",
 				},
 				RawParameters: json.RawMessage{},
 			}
 
 			acceptsIncomplete = true
-
-			rdsInstance.DescribeReturns(defaultDBInstance, nil)
-			rdsInstance.ModifyReturns(defaultDBInstance, nil)
 			rdsInstance.AddTagsToResourceReturns(nil)
-
 		})
 
 		Context("when updating a service instance", func() {
+			BeforeEach(func() {
+				rdsInstance.DescribeReturns(defaultDBInstance, nil)
+				rdsInstance.ModifyReturns(defaultDBInstance, nil)
+			})
 
-			Context("when has MaxAllocatedStorage", func() {
+			Context("and has MaxAllocatedStorage", func() {
 				BeforeEach(func() {
 					updateDetails.RawParameters = json.RawMessage(`{"max_allocated_storage": 200}`)
 				})
@@ -2718,6 +2735,68 @@ var _ = Describe("RDS Broker", func() {
 					Expect(aws.Int64Value(input.MaxAllocatedStorage)).To(Equal(int64(200)))
 				})
 			})
+
+			Context("and promote_replica is passed", func() {
+				BeforeEach(func() {
+					updateDetails.RawParameters = json.RawMessage(`{"promote_replica": true}`)
+				})
+
+				It("returns an error", func() {
+
+					_, err := rdsBroker.Update(ctx, instanceID, updateDetails, acceptsIncomplete)
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(Equal("Only read-replica instances support the promote_replica parameter"))
+
+				})
+			})
+
+		})
+
+		Context("when updating a read replica service instance", func() {
+			BeforeEach(func() {
+				instanceTags := map[string]string{
+					awsrds.TagReplicaOf: "test-arn",
+				}
+				rdsInstance.GetResourceTagsReturns(awsrds.BuilRDSTags(instanceTags), nil)
+
+				rdsInstance.DescribeReturns(replicaDBInstance, nil)
+				rdsInstance.PromoteReadReplicaReturns(replicaDBInstance, nil)
+			})
+
+			Context("and passed any parameter other than promote_replica", func() {
+				BeforeEach(func() {
+					updateDetails.RawParameters = json.RawMessage(`{"max_allocated_storage": 200}`)
+				})
+				It("returns an error", func() {
+					_, err := rdsBroker.Update(ctx, instanceID, updateDetails, acceptsIncomplete)
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(Equal("Read-replica instances do not support update parameters other than promote_replica"))
+				})
+			})
+
+			Context("and passed the promote_replica parameter", func() {
+				BeforeEach(func() {
+					updateDetails.RawParameters = json.RawMessage(`{"promote_replica": true}`)
+				})
+				It("calls PromoteReadReplica", func() {
+					_, err := rdsBroker.Update(ctx, instanceID, updateDetails, acceptsIncomplete)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(rdsInstance.PromoteReadReplicaCallCount()).To(Equal(1))
+
+					// Check for tags
+					Expect(rdsInstance.AddTagsToResourceCallCount()).To(Equal(1))
+					id, tags := rdsInstance.AddTagsToResourceArgsForCall(0)
+					Expect(id).To(Equal(dbInstanceArn))
+					tagsByName := awsrds.RDSTagsValues(tags)
+					Expect(tagsByName["Owner"]).To(Equal("Cloud Foundry"))
+					Expect(tagsByName["Broker Name"]).To(Equal("mybroker"))
+					Expect(tagsByName["Service ID"]).To(Equal("Service-1"))
+					Expect(tagsByName["Plan ID"]).To(Equal("Plan-1"))
+					Expect(tagsByName).To(HaveKey(StateUpdateSettings))
+
+				})
+			})
+
 		})
 	})
 
