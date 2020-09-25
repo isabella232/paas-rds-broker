@@ -27,10 +27,11 @@ type UpdateParameters struct {
 	EnableExtensions           []string `json:"enable_extensions"`
 	DisableExtensions          []string `json:"disable_extensions"`
 	MaxAllocatedStorage        int64    `json:"max_allocated_storage"`
+	PromoteReplica             bool     `json:"promote_replica"`
 }
 
 type BindParameters struct {
-	GrantReplication	bool	`json:"grant_replication"`
+	GrantReplication bool `json:"grant_replication"`
 }
 
 func (pp *ProvisionParameters) Validate() error {

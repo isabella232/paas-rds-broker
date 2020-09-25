@@ -75,6 +75,7 @@ const StateReboot = "PendingReboot"
 const StateResetUserPassword = "PendingResetUserPassword"
 
 var restoreStateSequence = []string{StateUpdateSettings, StateReboot, StateResetUserPassword}
+var promoteStateSequence = []string{StateUpdateSettings} // add StateResetUserPassword back in eventually
 
 type RDSBroker struct {
 	dbPrefix                     string
@@ -200,7 +201,10 @@ func (b *RDSBroker) Provision(
 	}
 
 	if provisionParameters.RestoreFromLatestSnapshotOf == nil {
+
+		// Replica
 		if provisionParameters.ReplicaSourceDbArn != "" {
+
 			createDBInstance, err := b.newCreateDBInstanceReadReplicaInput(instanceID, servicePlan, provisionParameters, details)
 			if err != nil {
 				return brokerapi.ProvisionedServiceSpec{}, err
@@ -217,6 +221,7 @@ func (b *RDSBroker) Provision(
 				return brokerapi.ProvisionedServiceSpec{}, err
 			}
 		}
+
 	} else {
 		if *provisionParameters.RestoreFromLatestSnapshotOf == "" {
 			return brokerapi.ProvisionedServiceSpec{}, fmt.Errorf("Invalid guid: '%s'", *provisionParameters.RestoreFromLatestSnapshotOf)
@@ -339,6 +344,7 @@ func (b *RDSBroker) Update(
 		return brokerapi.UpdateServiceSpec{}, brokerapi.ErrAsyncRequired
 	}
 
+	// Get our update parameters
 	updateParameters := UpdateParameters{}
 	if b.allowUserUpdateParameters && len(details.RawParameters) > 0 {
 		decoder := json.NewDecoder(bytes.NewReader(details.RawParameters))
@@ -385,6 +391,7 @@ func (b *RDSBroker) Update(
 		return brokerapi.UpdateServiceSpec{}, ErrEncryptionNotUpdateable
 	}
 
+	// Get our existing DB instance
 	existingInstance, err := b.dbInstance.Describe(b.dbInstanceIdentifier(instanceID))
 
 	if err != nil {
@@ -413,6 +420,21 @@ func (b *RDSBroker) Update(
 	}
 	tagsByName := awsrds.RDSTagsValues(tags)
 
+	// Is this a replica or not?
+	isReplica := false
+	if _, ok := tagsByName[awsrds.TagReplicaOf]; ok {
+		isReplica = true
+	}
+
+	// Validate given parameters for replica promotion
+	if isReplica && updateParameters.PromoteReplica != true {
+		return brokerapi.UpdateServiceSpec{}, fmt.Errorf("Read-replica instances do not support update parameters other than promote_replica")
+	}
+
+	if !isReplica && updateParameters.PromoteReplica != false {
+		return brokerapi.UpdateServiceSpec{}, fmt.Errorf("Only read-replica instances support the promote_replica parameter")
+	}
+
 	if aws.StringValue(servicePlan.RDSProperties.Engine) == "postgres" {
 		previousVersion := aws.StringValue(previousServicePlan.RDSProperties.EngineVersion)
 		newVersion := aws.StringValue(servicePlan.RDSProperties.EngineVersion)
@@ -436,30 +458,41 @@ func (b *RDSBroker) Update(
 	}
 
 	extensions = removeExtensions(extensions, updateParameters.DisableExtensions)
-	err = b.ensureDropExtensions(instanceID, existingInstance, updateParameters.DisableExtensions)
-	if err != nil {
-		return brokerapi.UpdateServiceSpec{}, err
-	}
 
 	deferReboot := false
 
-	newDbParamGroup, err = b.parameterGroupsSelector.SelectParameterGroup(servicePlan, extensions)
-	if err != nil {
-		return brokerapi.UpdateServiceSpec{}, err
-	}
-
-	if (len(updateParameters.EnableExtensions) > 0 || len(updateParameters.DisableExtensions) > 0) && newDbParamGroup != previousDbParamGroup {
-		if updateParameters.Reboot == nil || !*updateParameters.Reboot {
-			return brokerapi.UpdateServiceSpec{}, errors.New("The requested extensions require the instance to be manually rebooted. Please re-run update service with reboot set to true")
+	if !isReplica { // don't try to drop extensions if this is a read replica, since we can't actually connect to the pg instance w/ broker creds
+		err = b.ensureDropExtensions(instanceID, existingInstance, updateParameters.DisableExtensions)
+		if err != nil {
+			return brokerapi.UpdateServiceSpec{}, err
 		}
-		// When updating the parameter group, the instance will be in a modifying state
-		// for a couple of mins. So we have to defer the reboot to the last operation call.
-		deferReboot = true
+
+		newDbParamGroup, err = b.parameterGroupsSelector.SelectParameterGroup(servicePlan, extensions)
+		if err != nil {
+			return brokerapi.UpdateServiceSpec{}, err
+		}
+
+		if (len(updateParameters.EnableExtensions) > 0 || len(updateParameters.DisableExtensions) > 0) && newDbParamGroup != previousDbParamGroup {
+			if updateParameters.Reboot == nil || !*updateParameters.Reboot {
+				return brokerapi.UpdateServiceSpec{}, errors.New("The requested extensions require the instance to be manually rebooted. Please re-run update service with reboot set to true")
+			}
+			// When updating the parameter group, the instance will be in a modifying state
+			// for a couple of mins. So we have to defer the reboot to the last operation call.
+			deferReboot = true
+		}
 	}
 
-	modifyDBInstanceInput := b.newModifyDBInstanceInput(instanceID, servicePlan, updateParameters, newDbParamGroup)
+	// Modify Database instance
+	var updatedDBInstance *rds.DBInstance
 
-	updatedDBInstance, err := b.dbInstance.Modify(modifyDBInstanceInput)
+	if isReplica {
+		apiActionInput := b.newPromoteReadReplicaInput(instanceID, servicePlan, details)
+		updatedDBInstance, err = b.dbInstance.PromoteReadReplica(apiActionInput)
+	} else {
+		apiActionInput := b.newModifyDBInstanceInput(instanceID, servicePlan, updateParameters, newDbParamGroup)
+		updatedDBInstance, err = b.dbInstance.Modify(apiActionInput)
+	}
+
 	if err != nil {
 		if err == awsrds.ErrDBInstanceDoesNotExist {
 			return brokerapi.UpdateServiceSpec{}, brokerapi.ErrInstanceDoesNotExist
@@ -467,6 +500,7 @@ func (b *RDSBroker) Update(
 		return brokerapi.UpdateServiceSpec{}, err
 	}
 
+	// Update tags
 	instanceTags := RDSInstanceTags{
 		Action:     "Updated",
 		ServiceID:  details.ServiceID,
@@ -478,9 +512,20 @@ func (b *RDSBroker) Update(
 		instanceTags.SkipFinalSnapshot = strconv.FormatBool(*updateParameters.SkipFinalSnapshot)
 	}
 
-	builtTags := awsrds.BuilRDSTags(b.dbTags(instanceTags))
+	tagInput := b.dbTags(instanceTags)
+
+	if isReplica {
+		// Add on tags to the read replica which is being promoted that will get picked up by LastOperation to
+		// kick off actions once the instance is done promoting
+		for _, state := range promoteStateSequence {
+			tagInput[state] = "true"
+		}
+	}
+
+	builtTags := awsrds.BuilRDSTags(tagInput)
 	b.dbInstance.AddTagsToResource(aws.StringValue(updatedDBInstance.DBInstanceArn), builtTags)
 
+	// Reboot?
 	if updateParameters.Reboot != nil && *updateParameters.Reboot && !deferReboot {
 		rebootDBInstanceInput := &rds.RebootDBInstanceInput{
 			DBInstanceIdentifier: aws.String(b.dbInstanceIdentifier(instanceID)),
@@ -740,6 +785,7 @@ func (b *RDSBroker) LastOperation(
 	}
 
 	if lastOperationResponse.State == brokerapi.Succeeded {
+		// Does the instance have any AWS RDS pending modifications?
 		hasPendingModifications := false
 		if dbInstance.PendingModifiedValues != nil {
 			emptyPendingModifiedValues := rds.PendingModifiedValues{}
@@ -755,6 +801,10 @@ func (b *RDSBroker) LastOperation(
 			return lastOperationResponse, nil
 		}
 
+		// Pop off any extra tasks denoted in the instance's tags
+		// note: Read Replica promotion hacks in tags and uses this mechanism to update the database after
+		// being promoted to a standalone instance. We should rename/refactor PostRestoreTasks to be more generic
+		// in the future.
 		asyncOperationTriggered, err := b.PostRestoreTasks(instanceID, dbInstance, tagsByName)
 		if err != nil {
 			return brokerapi.LastOperation{State: brokerapi.Failed}, err
@@ -903,10 +953,23 @@ func (b *RDSBroker) updateDBSettings(instanceID string, dbInstance *rds.DBInstan
 		return false, fmt.Errorf("Service Plan '%s' not found", tagsByName[awsrds.TagPlanID])
 	}
 
+	// Was this a read-replica we promoted?
+	wasReplica := false
+	if _, ok := tagsByName[awsrds.TagReplicaOf]; ok {
+		wasReplica = true
+	}
+
 	existingParameterGroup := aws.StringValue(dbInstance.DBParameterGroups[0].DBParameterGroupName)
 
 	modifyDBInstanceInput := b.newModifyDBInstanceInput(instanceID, servicePlan, UpdateParameters{}, existingParameterGroup)
 	modifyDBInstanceInput.MasterUserPassword = aws.String(b.generateMasterPassword(instanceID))
+
+	// if this is an instance promoted from a Replica, explicitly use some of the previous instance
+	// configuration. Operators can opt to explicitly upgrade the plan later.
+	if wasReplica == true {
+		modifyDBInstanceInput.EngineVersion = dbInstance.EngineVersion
+	}
+
 	updatedDBInstance, err := b.dbInstance.Modify(modifyDBInstanceInput)
 	if err != nil {
 		if err == awsrds.ErrDBInstanceDoesNotExist {
@@ -920,17 +983,28 @@ func (b *RDSBroker) updateDBSettings(instanceID string, dbInstance *rds.DBInstan
 		extensions = strings.Split(exts, ":")
 	}
 
-	tags := b.dbTags(RDSInstanceTags{
+	newTags := RDSInstanceTags{
 		Action:         "Restored",
 		ServiceID:      serviceID,
 		PlanID:         planID,
 		OrganizationID: organizationID,
 		SpaceID:        spaceID,
 		Extensions:     extensions,
-	})
+	}
+
+	if wasReplica == true {
+		newTags.Action = "Promoted"
+	}
+
+	tags := b.dbTags(newTags)
 
 	rdsTags := awsrds.BuilRDSTags(tags)
 	b.dbInstance.AddTagsToResource(aws.StringValue(updatedDBInstance.DBInstanceArn), rdsTags)
+
+	if wasReplica == true { // drop the original replica tag
+		b.dbInstance.RemoveTag(b.dbInstanceIdentifier(instanceID), awsrds.TagReplicaOf)
+	}
+
 	// AddTagsToResource error intentionally ignored - it's logged inside the method
 
 	return true, nil
@@ -1188,35 +1262,46 @@ func (b *RDSBroker) newCreateDBInstanceReadReplicaInput(instanceID string, servi
 	}
 
 	tags := RDSInstanceTags{
-		Action:            "Created",
-		ServiceID:         details.ServiceID,
-		PlanID:            details.PlanID,
-		OrganizationID:    details.OrganizationGUID,
-		SpaceID:           details.SpaceGUID,
-		ReplicaOf:         replicaOf,
+		Action:         "Created",
+		ServiceID:      details.ServiceID,
+		PlanID:         details.PlanID,
+		OrganizationID: details.OrganizationGUID,
+		SpaceID:        details.SpaceGUID,
+		ReplicaOf:      replicaOf,
 	}
 
 	createDBInstanceInput := &rds.CreateDBInstanceReadReplicaInput{
-			DBInstanceIdentifier:       aws.String(b.dbInstanceIdentifier(instanceID)),
-			DBInstanceClass:            servicePlan.RDSProperties.DBInstanceClass,
-			AutoMinorVersionUpgrade:    servicePlan.RDSProperties.AutoMinorVersionUpgrade,
-			AvailabilityZone:           servicePlan.RDSProperties.AvailabilityZone,
-			CopyTagsToSnapshot:         servicePlan.RDSProperties.CopyTagsToSnapshot,
-			DBSubnetGroupName:          servicePlan.RDSProperties.DBSubnetGroupName,
-			OptionGroupName:            servicePlan.RDSProperties.OptionGroupName,
-			PubliclyAccessible:         servicePlan.RDSProperties.PubliclyAccessible,
-			Iops:                       servicePlan.RDSProperties.Iops,
-			KmsKeyId:                   servicePlan.RDSProperties.KmsKeyID,
-			MultiAZ:                    servicePlan.RDSProperties.MultiAZ,
-			Port:                       servicePlan.RDSProperties.Port,
-			SourceDBInstanceIdentifier: aws.String(replicaOf),
-			SourceRegion:               aws.String(replicaArn.Region),
-			StorageType:                servicePlan.RDSProperties.StorageType,
-			VpcSecurityGroupIds:        servicePlan.RDSProperties.VpcSecurityGroupIds,
-			Tags:                       awsrds.BuilRDSTags(b.dbTags(tags)),
+		DBInstanceIdentifier:       aws.String(b.dbInstanceIdentifier(instanceID)),
+		DBInstanceClass:            servicePlan.RDSProperties.DBInstanceClass,
+		AutoMinorVersionUpgrade:    servicePlan.RDSProperties.AutoMinorVersionUpgrade,
+		AvailabilityZone:           servicePlan.RDSProperties.AvailabilityZone,
+		CopyTagsToSnapshot:         servicePlan.RDSProperties.CopyTagsToSnapshot,
+		DBSubnetGroupName:          servicePlan.RDSProperties.DBSubnetGroupName,
+		OptionGroupName:            servicePlan.RDSProperties.OptionGroupName,
+		PubliclyAccessible:         servicePlan.RDSProperties.PubliclyAccessible,
+		Iops:                       servicePlan.RDSProperties.Iops,
+		KmsKeyId:                   servicePlan.RDSProperties.KmsKeyID,
+		MultiAZ:                    servicePlan.RDSProperties.MultiAZ,
+		Port:                       servicePlan.RDSProperties.Port,
+		SourceDBInstanceIdentifier: aws.String(replicaOf),
+		SourceRegion:               aws.String(replicaArn.Region),
+		StorageType:                servicePlan.RDSProperties.StorageType,
+		VpcSecurityGroupIds:        servicePlan.RDSProperties.VpcSecurityGroupIds,
+		Tags:                       awsrds.BuilRDSTags(b.dbTags(tags)),
 	}
 
 	return createDBInstanceInput, nil
+}
+
+func (b *RDSBroker) newPromoteReadReplicaInput(instanceID string, servicePlan ServicePlan, details brokerapi.UpdateDetails) *rds.PromoteReadReplicaInput {
+
+	promoteDBInstanceInput := &rds.PromoteReadReplicaInput{
+		DBInstanceIdentifier:  aws.String(b.dbInstanceIdentifier(instanceID)),
+		BackupRetentionPeriod: servicePlan.RDSProperties.BackupRetentionPeriod,
+		PreferredBackupWindow: servicePlan.RDSProperties.PreferredBackupWindow,
+	}
+
+	return promoteDBInstanceInput
 }
 
 func (b *RDSBroker) restoreDBInstanceInput(instanceID, snapshotIdentifier string, servicePlan ServicePlan, provisionParameters ProvisionParameters, details brokerapi.ProvisionDetails) (*rds.RestoreDBInstanceFromDBSnapshotInput, error) {
@@ -1340,6 +1425,13 @@ func (b *RDSBroker) dbTags(instanceTags RDSInstanceTags) map[string]string {
 		tags[awsrds.TagSkipFinalSnapshot] = instanceTags.SkipFinalSnapshot
 	}
 
+	if instanceTags.ReplicaOf != "" {
+		tags[awsrds.TagReplicaOf] = instanceTags.ReplicaOf
+	}
+
+	// If this is a restoration from an existing snapshot, stick state tags onto the instance
+	// so LastOperation knows what we need to do after the instance is restored & available
+	// we should probably move this out of dbTags
 	if instanceTags.OriginSnapshotIdentifier != "" {
 		tags[awsrds.TagRestoredFromSnapshot] = instanceTags.OriginSnapshotIdentifier
 		for _, state := range restoreStateSequence {
@@ -1349,10 +1441,6 @@ func (b *RDSBroker) dbTags(instanceTags RDSInstanceTags) map[string]string {
 
 	if len(instanceTags.Extensions) > 0 {
 		tags[awsrds.TagExtensions] = strings.Join(instanceTags.Extensions, ":")
-	}
-
-	if instanceTags.ReplicaOf != "" {
-		tags[awsrds.TagReplicaOf] = instanceTags.ReplicaOf
 	}
 
 	return tags

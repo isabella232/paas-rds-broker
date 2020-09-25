@@ -32,9 +32,9 @@ type FakeRDSInstance struct {
 	createReturnsOnCall map[int]struct {
 		result1 error
 	}
-	CreateReadReplicaStub           func(*rds.CreateDBInstanceReadReplicaInput) error
+	CreateReadReplicaStub        func(*rds.CreateDBInstanceReadReplicaInput) error
 	createReadReplicaMutex       sync.RWMutex
-	createReadReplicaArgsForCall    []struct {
+	createReadReplicaArgsForCall []struct {
 		arg1 *rds.CreateDBInstanceReadReplicaInput
 	}
 	createReadReplicaReturns struct {
@@ -184,6 +184,21 @@ type FakeRDSInstance struct {
 	modifyParameterGroupReturnsOnCall map[int]struct {
 		result1 error
 	}
+
+	PromoteReadReplicaStub        func(*rds.PromoteReadReplicaInput) (*rds.DBInstance, error)
+	promoteReadReplicaMutex       sync.RWMutex
+	promoteReadReplicaArgsForCall []struct {
+		promoteReadReplicaInput *rds.PromoteReadReplicaInput
+	}
+	promoteReadReplicaReturns struct {
+		result1 *rds.DBInstance
+		result2 error
+	}
+	promoteReadReplicaReturnsOnCall map[int]struct {
+		result1 *rds.DBInstance
+		result2 error
+	}
+
 	RebootStub        func(*rds.RebootDBInstanceInput) error
 	rebootMutex       sync.RWMutex
 	rebootArgsForCall []struct {
@@ -406,6 +421,63 @@ func (fake *FakeRDSInstance) CreateReadReplicaReturnsOnCall(i int, result1 error
 	fake.createReadReplicaReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
+}
+
+func (fake *FakeRDSInstance) PromoteReadReplica(promoteReadReplicaInput *rds.PromoteReadReplicaInput) (*rds.DBInstance, error) {
+	fake.promoteReadReplicaMutex.Lock()
+
+	ret, specificReturn := fake.promoteReadReplicaReturnsOnCall[len(fake.promoteReadReplicaArgsForCall)]
+
+	fake.promoteReadReplicaArgsForCall = append(fake.promoteReadReplicaArgsForCall, struct {
+		promoteReadReplicaInput *rds.PromoteReadReplicaInput
+	}{promoteReadReplicaInput})
+
+	fake.recordInvocation("PromoteReadReplica", []interface{}{promoteReadReplicaInput})
+
+	fake.promoteReadReplicaMutex.Unlock()
+
+	if fake.PromoteReadReplicaStub != nil {
+		return fake.PromoteReadReplicaStub(promoteReadReplicaInput)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	fakeReturns := fake.promoteReadReplicaReturns
+	return fakeReturns.result1, fakeReturns.result2
+	return nil, nil
+}
+
+func (fake *FakeRDSInstance) PromoteReadReplicaCallCount() int {
+	fake.promoteReadReplicaMutex.RLock()
+	defer fake.promoteReadReplicaMutex.RUnlock()
+	return len(fake.promoteReadReplicaArgsForCall)
+}
+
+func (fake *FakeRDSInstance) PromoteReadReplicaReturns(result1 *rds.DBInstance, result2 error) {
+	fake.promoteReadReplicaMutex.Lock()
+	defer fake.promoteReadReplicaMutex.Unlock()
+	fake.PromoteReadReplicaStub = nil
+	fake.promoteReadReplicaReturns = struct {
+		result1 *rds.DBInstance
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeRDSInstance) PromoteReadReplicaReturnsOnCall(i int, result1 *rds.DBInstance, result2 error) {
+	fake.promoteReadReplicaMutex.Lock()
+	defer fake.promoteReadReplicaMutex.Unlock()
+
+	fake.PromoteReadReplicaStub = nil
+	if fake.promoteReadReplicaReturnsOnCall == nil {
+		fake.promoteReadReplicaReturnsOnCall = make(map[int]struct {
+			result1 *rds.DBInstance
+			result2 error
+		})
+	}
+	fake.promoteReadReplicaReturnsOnCall[i] = struct {
+		result1 *rds.DBInstance
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeRDSInstance) CreateParameterGroup(arg1 *rds.CreateDBParameterGroupInput) error {
