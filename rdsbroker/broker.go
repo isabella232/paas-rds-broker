@@ -83,6 +83,7 @@ type RDSBroker struct {
 	allowUserProvisionParameters bool
 	allowUserUpdateParameters    bool
 	allowUserBindParameters      bool
+	restoreAccessOrgGUID         string
 	catalog                      Catalog
 	dbInstance                   awsrds.RDSInstance
 	sqlProvider                  sqlengine.Provider
@@ -128,6 +129,7 @@ func New(
 		allowUserBindParameters:      config.AllowUserBindParameters,
 		catalog:                      config.Catalog,
 		brokerName:                   config.BrokerName,
+		restoreAccessOrgGUID:         config.RestoreAccessOrgGUID,
 		dbInstance:                   dbInstance,
 		sqlProvider:                  sqlProvider,
 		logger:                       logger.Session("broker"),
@@ -285,8 +287,10 @@ func (b *RDSBroker) Provision(
 		}
 		tagsByName := awsrds.RDSTagsValues(tags)
 
-		if tagsByName[awsrds.TagSpaceID] != details.SpaceGUID || tagsByName[awsrds.TagOrganizationID] != details.OrganizationGUID {
-			return brokerapi.ProvisionedServiceSpec{}, fmt.Errorf("The service instance you are getting a snapshot from is not in the same org or space")
+		if details.OrganizationGUID != b.restoreAccessOrgGUID {
+			if tagsByName[awsrds.TagSpaceID] != details.SpaceGUID || tagsByName[awsrds.TagOrganizationID] != details.OrganizationGUID {
+				return brokerapi.ProvisionedServiceSpec{}, fmt.Errorf("The service instance you are getting a snapshot from is not in the same org or space")
+			}
 		}
 		if tagsByName[awsrds.TagPlanID] != details.PlanID {
 			return brokerapi.ProvisionedServiceSpec{}, fmt.Errorf("You must use the same plan as the service instance you are getting a snapshot from")

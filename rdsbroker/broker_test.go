@@ -75,6 +75,7 @@ var _ = Describe("RDS Broker", func() {
 
 	const (
 		masterPasswordSeed   = "something-secret"
+		restoreAccessOrgGUID = "allowed-organization-id"
 		instanceID           = "instance-id"
 		bindingID            = "binding-id"
 		dbInstanceIdentifier = "cf-instance-id"
@@ -206,6 +207,7 @@ var _ = Describe("RDS Broker", func() {
 			DBPrefix:                     dbPrefix,
 			BrokerName:                   brokerName,
 			MasterPasswordSeed:           masterPasswordSeed,
+			RestoreAccessOrgGUID:         restoreAccessOrgGUID,
 			AllowUserProvisionParameters: allowUserProvisionParameters,
 			AllowUserUpdateParameters:    allowUserUpdateParameters,
 			AllowUserBindParameters:      allowUserBindParameters,
@@ -508,6 +510,25 @@ var _ = Describe("RDS Broker", func() {
 					It("should fail to restore", func() {
 						_, err := rdsBroker.Provision(ctx, instanceID, provisionDetails, acceptsIncomplete)
 						Expect(err).To(HaveOccurred())
+					})
+				})
+
+				Context("when the snapshot is in a different org, but the org is allowed to restore anything", func() {
+
+					BeforeEach(func() {
+						provisionDetails = brokerapi.ProvisionDetails{
+							OrganizationGUID: restoreAccessOrgGUID,
+							PlanID:           "Plan-1",
+							ServiceID:        "Service-1",
+							SpaceGUID:        "arbitrary-space-id",
+							RawParameters:    json.RawMessage(`{"restore_from_latest_snapshot_of": "` + restoreFromSnapshotInstanceGUID + `"}`),
+						}
+					})
+
+					It("should not fail to restore", func() {
+						_, err := rdsBroker.Provision(ctx, instanceID, provisionDetails, acceptsIncomplete)
+						Expect(rdsInstance.RestoreCallCount()).To(Equal(1))
+						Expect(err).ToNot(HaveOccurred())
 					})
 				})
 

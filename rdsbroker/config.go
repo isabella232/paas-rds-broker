@@ -11,6 +11,7 @@ type Config struct {
 	BrokerName                   string  `json:"broker_name"`
 	AWSPartition                 string  `json:"aws_partition"`
 	MasterPasswordSeed           string  `json:"master_password_seed"`
+	RestoreAccessOrgGUID         string  `json:"restore_access_org_guid"`
 	AllowUserProvisionParameters bool    `json:"allow_user_provision_parameters"`
 	AllowUserUpdateParameters    bool    `json:"allow_user_update_parameters"`
 	AllowUserBindParameters      bool    `json:"allow_user_bind_parameters"`
